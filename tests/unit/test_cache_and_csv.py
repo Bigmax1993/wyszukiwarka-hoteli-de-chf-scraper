@@ -45,7 +45,7 @@ def test_append_and_load_existing_csv(scraper_module, isolated_paths):
 def test_save_csv_writes_header(scraper_module, isolated_paths):
     scraper_module.save_csv([], scraper_module.OUTPUT_FILE)
     content = scraper_module.OUTPUT_FILE.read_text(encoding="utf-8-sig")
-    assert "Query;Nazwa;Ocena" in content
+    assert "Query;Region;Nazwa;Ocena" in content
 
 
 def test_get_place_details_with_cache_hit(scraper_module, logger):

@@ -7,6 +7,7 @@ import re
 import time
 from pathlib import Path
 from urllib.parse import quote_plus, urljoin
+from urllib.request import Request, urlopen
 
 from openai import OpenAI
 from selenium import webdriver
@@ -42,6 +43,7 @@ AMENITY_KEYWORDS = ["Küche", "Parkplatz", "WLAN", "Waschmaschine", "Einzelbette
 
 CSV_FIELDS = [
     "Query",
+    "Region",
     "Nazwa",
     "Ocena",
     "Opinie",
@@ -68,6 +70,7 @@ HEADLESS_DEFAULT = True
 EXTERNAL_SITE_TIMEOUT = 10
 MAPS_RESULTS_TIMEOUT = 120
 OPENAI_MODEL = "gpt-4o-mini"
+REVERSE_GEO_TIMEOUT = 8
 
 
 class CaptchaRequired(Exception):
@@ -382,6 +385,7 @@ def clean_url(value):
 def clean_row_data(row):
     cleaned = dict(row)
     cleaned["Query"] = clean_text(cleaned.get("Query"))
+    cleaned["Region"] = clean_text(cleaned.get("Region"))
     cleaned["Nazwa"] = clean_text(cleaned.get("Nazwa"))
     cleaned["Ocena"] = clean_text(cleaned.get("Ocena"))
     cleaned["Opinie"] = re.sub(r"[^\d]", "", clean_text(cleaned.get("Opinie")))
@@ -411,6 +415,28 @@ def final_validate_row(row):
     except Exception:
         return False
     return True
+
+
+def resolve_region(country, lat, lon, cache, logger):
+    region_cache = cache.setdefault("regions", {})
+    cache_key = f"{country}:{lat}:{lon}"
+    if cache_key in region_cache:
+        return region_cache[cache_key]
+
+    # Nominatim reverse geocoding: DE -> Bundesland, CH -> Kanton.
+    url = f"https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat={lat}&lon={lon}&zoom=8&addressdetails=1"
+    try:
+        req = Request(url, headers={"User-Agent": "worker-accommodation-scraper/1.0"})
+        with urlopen(req, timeout=REVERSE_GEO_TIMEOUT) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        address = payload.get("address", {})
+        region = address.get("state") or address.get("region") or address.get("county") or ""
+    except Exception as exc:
+        logger.warning(f"Region resolve error ({country}, {lat}, {lon}): {exc}")
+        region = ""
+
+    region_cache[cache_key] = region
+    return region
 
 
 def scrape_query_cell(driver, query, country, lat, lon, cache, client, logger):
@@ -468,6 +494,7 @@ def scrape_query_cell(driver, query, country, lat, lon, cache, client, logger):
             ai_details = ai_cached if from_cache else cache_entry.get("ai_details", {})
         row = {
             "Query": f"{query} ({country})",
+            "Region": resolve_region(country, lat, lon, cache, logger),
             "Nazwa": name,
             "Ocena": rating,
             "Opinie": reviews,
