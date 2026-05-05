@@ -1,5 +1,4 @@
-﻿selenium
-webdriver-manager
+﻿playwright
 pytest
 google-api-python-client
 google-auth

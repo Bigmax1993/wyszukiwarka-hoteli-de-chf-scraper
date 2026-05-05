@@ -6,17 +6,40 @@ import random
 import re
 import time
 from pathlib import Path
-from urllib.parse import quote_plus, urljoin
+from urllib.parse import quote_plus, urljoin, urlparse
 from urllib.request import Request, urlopen
 
 from openai import OpenAI
-from selenium import webdriver
-from selenium.common.exceptions import NoSuchElementException, TimeoutException
-from selenium.webdriver.common.by import By
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.support.ui import WebDriverWait
-from webdriver_manager.chrome import ChromeDriverManager
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+from playwright.sync_api import sync_playwright
+
+try:
+    from selenium.common.exceptions import NoSuchElementException, TimeoutException
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.support import expected_conditions as EC
+    from selenium.webdriver.support.ui import WebDriverWait
+except Exception:
+    class TimeoutException(Exception):
+        pass
+
+    class NoSuchElementException(Exception):
+        pass
+
+    class By:
+        XPATH = "xpath"
+        TAG_NAME = "tag_name"
+
+    class EC:
+        @staticmethod
+        def presence_of_element_located(_locator):
+            return True
+
+    class WebDriverWait:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def until(self, _condition):
+            return True
 
 try:
     PROJECT_ROOT = Path(__file__).resolve().parent
@@ -40,6 +63,20 @@ SEARCH_QUERIES = [
 SEARCH_COUNTRIES = ["Deutschland", "Schweiz"]
 LUXURY_KEYWORDS = ("luxushotel", "wellnesshotel", "resort")
 AMENITY_KEYWORDS = ["Küche", "Parkplatz", "WLAN", "Waschmaschine", "Einzelbetten"]
+PORTAL_SOURCES = [
+    "https://www.booking.com",
+    "https://www.kleinanzeigen.de",
+    "https://www.immobilienscout24.de",
+    "https://www.immowelt.de",
+    "https://www.wg-gesucht.de",
+    "https://www.monteurzimmer.de",
+    "https://www.immobilien.de",
+    "https://www.immonet.de",
+    "https://www.meinestadt.de",
+    "https://www.hometogo.de",
+    "https://www.holidaycheck.de",
+    "https://www.trivago.de",
+]
 
 CSV_FIELDS = [
     "Query",
@@ -71,6 +108,8 @@ EXTERNAL_SITE_TIMEOUT = 10
 MAPS_RESULTS_TIMEOUT = 120
 OPENAI_MODEL = "gpt-4o-mini"
 REVERSE_GEO_TIMEOUT = 8
+PLAYWRIGHT_TIMEOUT_MS = 25000
+MAX_RESULTS_PER_PORTAL_QUERY = 30
 
 
 class CaptchaRequired(Exception):
@@ -153,7 +192,10 @@ def append_row_to_csv(path, row):
 
 def click_if_exists(driver, by, value):
     try:
-        driver.find_element(by, value).click()
+        if hasattr(driver, "find_element"):
+            driver.find_element(by, value).click()
+        else:
+            driver.locator(value).first.click(timeout=2000)
         return True
     except Exception:
         return False
@@ -161,15 +203,22 @@ def click_if_exists(driver, by, value):
 
 def dismiss_consent(driver):
     selectors = [
-        (By.XPATH, "//button[contains(., 'Accept all')]"),
-        (By.XPATH, "//button[contains(., 'Alle akzeptieren')]"),
-        (By.XPATH, "//button[contains(., 'Ich stimme zu')]"),
-        (By.XPATH, "//button[contains(., 'I agree')]"),
+        "button:has-text('Accept all')",
+        "button:has-text('Alle akzeptieren')",
+        "button:has-text('Ich stimme zu')",
+        "button:has-text('I agree')",
+        "[id*='consent'] button",
+        "[class*='consent'] button",
     ]
-    for by, value in selectors:
-        if click_if_exists(driver, by, value):
-            time.sleep(1)
-            break
+    for selector in selectors:
+        try:
+            locator = driver.locator(selector).first
+            if locator.count():
+                locator.click(timeout=1500)
+                time.sleep(0.5)
+                return
+        except Exception:
+            continue
 
 
 def search_url(query, country, lat, lon, zoom=10.5):
@@ -178,27 +227,40 @@ def search_url(query, country, lat, lon, zoom=10.5):
 
 
 def build_driver(headless=True):
-    options = webdriver.ChromeOptions()
-    if headless:
-        options.add_argument("--headless=new")
-        options.add_argument("--window-size=1920,1080")
-    else:
-        options.add_argument("--start-maximized")
-    options.add_argument("--disable-blink-features=AutomationControlled")
-    return webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+    playwright = sync_playwright().start()
+    browser = playwright.chromium.launch(
+        headless=headless,
+        args=["--disable-blink-features=AutomationControlled"],
+    )
+    context = browser.new_context(
+        viewport={"width": 1920, "height": 1080},
+        user_agent=(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        ),
+    )
+    page = context.new_page()
+    return {"playwright": playwright, "browser": browser, "context": context, "page": page}
 
 
 def is_captcha_page(driver):
     try:
-        url = (driver.current_url or "").lower()
-        title = (driver.title or "").lower()
+        if hasattr(driver, "current_url"):
+            url = (driver.current_url or "").lower()
+            title = (driver.title or "").lower()
+            iframe_count = len(driver.find_elements(None, "//iframe[contains(@src, 'recaptcha')]"))
+        else:
+            url = (driver.url or "").lower()
+            title = (driver.title() or "").lower()
+            iframe_count = driver.locator("iframe[src*='recaptcha']").count()
     except Exception:
         return False
     if any(part in url for part in ["/sorry/", "recaptcha"]):
         return True
     if any(part in title for part in ["unusual traffic", "recaptcha", "robot check"]):
         return True
-    return bool(driver.find_elements(By.XPATH, "//iframe[contains(@src, 'recaptcha')]"))
+    return iframe_count > 0
 
 
 def parse_card_text(raw_text):
@@ -272,9 +334,15 @@ def get_hotel_details_ai(driver, website_url, client, logger):
         return default
     try:
         time.sleep(random.uniform(2, 5))
-        driver.set_page_load_timeout(EXTERNAL_SITE_TIMEOUT)
-        driver.get(website_url)
-        body_text = (driver.find_element(By.TAG_NAME, "body").text or "").strip()[:4000]
+        page = driver["page"] if isinstance(driver, dict) else driver
+        if hasattr(page, "goto"):
+            page.goto(website_url, timeout=EXTERNAL_SITE_TIMEOUT * 1000, wait_until="domcontentloaded")
+            body_text = (page.locator("body").inner_text(timeout=5000) or "").strip()[:4000]
+        else:
+            if hasattr(page, "set_page_load_timeout"):
+                page.set_page_load_timeout(EXTERNAL_SITE_TIMEOUT)
+            page.get(website_url)
+            body_text = (page.find_element(By.TAG_NAME, "body").text or "").strip()[:4000]
         if not body_text:
             default["comment"] = "No visible body text"
             return default
@@ -336,25 +404,122 @@ def get_place_details_with_cache(driver, place_url, cache, logger):
     return phone, website, status, full_address, amenities_maps, {}, False
 
 
-def scroll_results_panel(driver):
-    try:
-        panel = driver.find_element(By.XPATH, "//div[@role='feed']")
-    except NoSuchElementException:
-        panel = None
-    previous_count = 0
+def scroll_results_panel(page):
+    if hasattr(page, "find_elements"):
+        previous_count = 0
+        stable_rounds = 0
+        for _ in range(MAX_SCROLL_ROUNDS):
+            cards = page.find_elements(By.XPATH, "//a[contains(@href, '/maps/place/')]")
+            current_count = len(cards)
+            stable_rounds = stable_rounds + 1 if current_count <= previous_count else 0
+            previous_count = current_count
+            if stable_rounds >= 4:
+                break
+            page.execute_script("window.scrollBy(0, 3000);")
+            time.sleep(SCROLL_PAUSE)
+        return
+
+    previous_len = 0
     stable_rounds = 0
     for _ in range(MAX_SCROLL_ROUNDS):
-        cards = driver.find_elements(By.XPATH, "//a[contains(@href, '/maps/place/')]")
-        current_count = len(cards)
-        stable_rounds = stable_rounds + 1 if current_count <= previous_count else 0
-        previous_count = current_count
+        page.mouse.wheel(0, 5000)
+        page.wait_for_timeout(int(SCROLL_PAUSE * 1000))
+        html = page.content().lower()
+        current_len = html.count("<a ")
+        stable_rounds = stable_rounds + 1 if current_len <= previous_len else 0
+        previous_len = current_len
         if stable_rounds >= 4:
             break
-        if panel is not None:
-            driver.execute_script("arguments[0].scrollTop = arguments[0].scrollHeight;", panel)
-        else:
-            driver.execute_script("window.scrollBy(0, 3000);")
-        time.sleep(SCROLL_PAUSE)
+
+
+def _extract_listing_candidates_from_html(html, base_url):
+    rows = []
+    seen = set()
+    link_pattern = re.compile(r'<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>', re.IGNORECASE | re.DOTALL)
+    text_strip = re.compile(r"<[^>]+>")
+    for href, anchor_html in link_pattern.findall(html):
+        href = href.strip()
+        if not href or href.startswith("javascript:") or href.startswith("#"):
+            continue
+        full_url = urljoin(base_url, href)
+        if full_url in seen:
+            continue
+        visible = clean_text(text_strip.sub(" ", anchor_html))
+        if len(visible) < 3:
+            continue
+        lowered = visible.lower()
+        if not any(
+            token in lowered
+            for token in (
+                "zimmer",
+                "wohnung",
+                "unterkunft",
+                "apartment",
+                "ferien",
+                "room",
+                "rent",
+                "miete",
+                "guest",
+                "pension",
+            )
+        ):
+            continue
+        if any(token in lowered for token in LUXURY_KEYWORDS):
+            continue
+        seen.add(full_url)
+        rows.append((visible[:120], full_url))
+        if len(rows) >= MAX_RESULTS_PER_PORTAL_QUERY:
+            break
+    return rows
+
+
+def scrape_portal_query(page, portal_url, query, country, cache, client, logger):
+    q = quote_plus(f"{query} {country}")
+    target_url = f"{portal_url}/search?query={q}"
+    rows = []
+    try:
+        page.goto(target_url, timeout=PLAYWRIGHT_TIMEOUT_MS, wait_until="domcontentloaded")
+    except PlaywrightTimeoutError:
+        logger.warning(f"Timeout: {portal_url} | {query} ({country})")
+        return rows
+    except Exception as exc:
+        logger.warning(f"Portal open error ({portal_url}): {exc}")
+        return rows
+
+    dismiss_consent(page)
+    scroll_results_panel(page)
+    html = page.content()
+    candidates = _extract_listing_candidates_from_html(html, portal_url)
+
+    for name, place_url in candidates:
+        cache_entry = cache.setdefault("places", {}).setdefault(place_url, {})
+        ai_details = cache_entry.get("ai_details", {})
+        if not ai_details:
+            ai_details = get_hotel_details_ai({"page": page}, place_url, client, logger)
+            cache_entry["ai_details"] = ai_details
+
+        parsed = urlparse(place_url)
+        row = {
+            "Query": f"{query} ({country})",
+            "Region": "",
+            "Nazwa": name,
+            "Ocena": "",
+            "Opinie": "",
+            "Adres": parsed.netloc,
+            "Telefon": "",
+            "WWW": place_url,
+            "Cena_AI": ai_details.get("price", "") if isinstance(ai_details, dict) else "",
+            "Waluta": ai_details.get("currency", "") if isinstance(ai_details, dict) else "",
+            "Uwagi_AI": ai_details.get("comment", "") if isinstance(ai_details, dict) else "",
+            "Udogodnienia_Maps": "",
+            "URL": place_url,
+            "Lat": "0.0",
+            "Lon": "0.0",
+        }
+        row = clean_row_data(row)
+        if final_validate_row(row):
+            rows.append(row)
+    return rows
 
 
 def clean_text(value):
@@ -519,40 +684,61 @@ def scrape_query_cell(driver, query, country, lat, lon, cache, client, logger):
 
 def run_scraper(headless_default=HEADLESS_DEFAULT):
     logger = setup_logging()
-    logger.info("=== START scraper Monteurzimmer (DE + CH) ===")
+    logger.info("=== START scraper portalowy (Playwright, bez publicznego API) ===")
     logger.info("OpenAI: %s", "ON" if os.getenv("OPENAI_API_KEY", "").strip() else "OFF")
     driver = build_driver(headless=headless_default)
     client = get_openai_client(logger)
     all_rows, seen_global = load_existing_csv(OUTPUT_FILE)
     cache = load_cache(logger)
     try:
-        grid_points = [
-            (lat, lon)
-            for lat in frange(LAT_MIN, LAT_MAX, LAT_STEP)
-            for lon in frange(LON_MIN, LON_MAX, LON_STEP)
-        ]
-        for idx, (lat, lon) in enumerate(grid_points, start=1):
-            logger.info(f"Komorka {idx}/{len(grid_points)} | lat={lat}, lon={lon}")
-            for country in SEARCH_COUNTRIES:
-                for query in SEARCH_QUERIES:
-                    try:
-                        rows = scrape_query_cell(driver, query, country, lat, lon, cache, client, logger)
-                    except CaptchaRequired:
-                        logger.warning(f"CAPTCHA: {query} ({country})")
-                        continue
-                    except Exception as exc:
-                        logger.warning(f"Blad: {query} ({country}) -> {exc}")
-                        continue
-                    for row in rows:
-                        if row["URL"] in seen_global:
+        if isinstance(driver, dict):
+            page = driver["page"]
+            total_tasks = len(PORTAL_SOURCES) * len(SEARCH_COUNTRIES) * len(SEARCH_QUERIES)
+            task_idx = 0
+            for portal_url in PORTAL_SOURCES:
+                for country in SEARCH_COUNTRIES:
+                    for query in SEARCH_QUERIES:
+                        task_idx += 1
+                        logger.info(f"Zadanie {task_idx}/{total_tasks} | {portal_url} | {query} ({country})")
+                        try:
+                            rows = scrape_portal_query(page, portal_url, query, country, cache, client, logger)
+                        except CaptchaRequired:
+                            logger.warning(f"CAPTCHA: {portal_url} | {query} ({country})")
                             continue
-                        seen_global.add(row["URL"])
-                        all_rows.append(row)
-                        append_row_to_csv(OUTPUT_FILE, row)
-                        save_cache(cache, logger)
-                        logger.info(f"Dodano rekord: {row['Nazwa']} | {row['URL']}")
+                        except Exception as exc:
+                            logger.warning(f"Blad: {portal_url} | {query} ({country}) -> {exc}")
+                            continue
+                        for row in rows:
+                            if row["URL"] in seen_global:
+                                continue
+                            seen_global.add(row["URL"])
+                            all_rows.append(row)
+                            append_row_to_csv(OUTPUT_FILE, row)
+                            save_cache(cache, logger)
+                            logger.info(f"Dodano rekord: {row['Nazwa']} | {row['URL']}")
+        else:
+            grid_points = [(lat, lon) for lat in frange(LAT_MIN, LAT_MAX, LAT_STEP) for lon in frange(LON_MIN, LON_MAX, LON_STEP)]
+            for lat, lon in grid_points:
+                for country in SEARCH_COUNTRIES:
+                    for query in SEARCH_QUERIES:
+                        try:
+                            rows = scrape_query_cell(driver, query, country, lat, lon, cache, client, logger)
+                        except Exception:
+                            continue
+                        for row in rows:
+                            if row["URL"] in seen_global:
+                                continue
+                            seen_global.add(row["URL"])
+                            all_rows.append(row)
+                            append_row_to_csv(OUTPUT_FILE, row)
+                            save_cache(cache, logger)
     finally:
-        driver.quit()
+        if isinstance(driver, dict):
+            driver["context"].close()
+            driver["browser"].close()
+            driver["playwright"].stop()
+        elif hasattr(driver, "quit"):
+            driver.quit()
         save_csv(all_rows, OUTPUT_FILE)
         save_cache(cache, logger)
         logger.info(f"Gotowe. Rekordow: {len(all_rows)}")

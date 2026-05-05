@@ -1,21 +1,21 @@
-﻿# Wyszukiwarka hoteli pracowniczych (DE, CH)
+﻿# Wyszukiwarka noclegow pracowniczych (DE, CH)
 
-Pythonowy scraper Google Maps (Selenium), ktory zbiera dane o noclegach pracowniczych
-w Niemczech i Szwajcarii (np. `Monteurzimmer`, `Handwerkerunterkunft`) i zapisuje je do CSV.
+Pythonowy scraper oparty o Playwright, ktory zbiera oferty noclegow/pokoi/mieszkan
+z wielu portali niemieckich i zapisuje je do CSV.
 
 ## Co robi projekt
 
-- przeszukuje Google Maps po zestawie fraz i siatce wspolrzednych,
-- pobiera szczegoly obiektow (adres, telefon, www),
+- przeszukuje wiele portali po zestawie fraz i krajow,
+- pobiera oferty bez publicznego API (automatyzacja przegladarki),
 - filtruje rekordy (np. odrzuca luksusowe obiekty),
-- zapisuje tylko obiekty rozpoznane jako otwarte,
 - opcjonalnie uzupelnia dane AI o cene/walute/uwagi na bazie strony WWW obiektu.
 
 ## Wymagania
 
 - Python 3.10+
-- Google Chrome
+- Chromium (instalowany przez Playwright)
 - `pip install -r requirements.txt`
+- `playwright install chromium`
 - opcjonalnie: `OPENAI_API_KEY` (dla pol AI)
 
 ## Szybki start
@@ -24,8 +24,26 @@ w Niemczech i Szwajcarii (np. `Monteurzimmer`, `Handwerkerunterkunft`) i zapisuj
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
+playwright install chromium
 python scraper.py
 ```
+
+## Zrodla (portale)
+
+Skrypt domyslnie przeszukuje m.in.:
+
+- `booking.com`
+- `kleinanzeigen.de`
+- `immobilienscout24.de`
+- `immowelt.de`
+- `wg-gesucht.de`
+- `monteurzimmer.de`
+- `immobilien.de`
+- `immonet.de`
+- `meinestadt.de`
+- `hometogo.de`
+- `holidaycheck.de`
+- `trivago.de`
 
 ## Zmienne srodowiskowe
 
