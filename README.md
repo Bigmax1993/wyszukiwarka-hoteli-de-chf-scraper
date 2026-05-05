@@ -8,7 +8,7 @@ z wielu portali niemieckich i zapisuje je do CSV.
 - przeszukuje wiele portali po zestawie fraz i krajow,
 - pobiera oferty bez publicznego API (automatyzacja przegladarki),
 - filtruje rekordy (np. odrzuca luksusowe obiekty),
-- opcjonalnie uzupelnia dane AI o cene/walute/uwagi na bazie strony WWW obiektu.
+- zapisuje wyniki do CSV i cache JSON.
 
 ## Wymagania
 
@@ -16,7 +16,6 @@ z wielu portali niemieckich i zapisuje je do CSV.
 - Chromium (instalowany przez Playwright)
 - `pip install -r requirements.txt`
 - `playwright install chromium`
-- opcjonalnie: `OPENAI_API_KEY` (dla pol AI)
 
 ## Szybki start
 
@@ -44,22 +43,6 @@ Skrypt domyslnie przeszukuje m.in.:
 - `hometogo.de`
 - `holidaycheck.de`
 - `trivago.de`
-
-## Zmienne srodowiskowe
-
-- `OPENAI_API_KEY` - opcjonalny klucz OpenAI
-
-PowerShell:
-
-```powershell
-$env:OPENAI_API_KEY="twoj_klucz"
-```
-
-CMD:
-
-```cmd
-set OPENAI_API_KEY=twoj_klucz
-```
 
 ## Wyniki
 

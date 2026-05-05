@@ -10,7 +10,6 @@ Skrypt:
 - przechodzi po siatce wspolrzednych (lat/lon),
 - odpytuje Google Maps dla wielu fraz i krajow,
 - zbiera dane kontaktowe i adresowe,
-- probuje wyciagnac informacje cenowe ze strony WWW obiektu przy pomocy OpenAI,
 - zapisuje wyniki do CSV oraz utrzymuje cache JSON.
 
 ## 2. Zakres i logika dzialania
@@ -41,7 +40,7 @@ Najwazniejsze funkcje:
 - `run_scraper()` - petla glowna po siatce i zapytaniach
 - `scrape_query_cell()` - przetworzenie jednej komorki geograficznej i jednej frazy
 - `extract_details_in_new_tab()` - pobieranie szczegolow obiektu z karty miejsca
-- `get_hotel_details_ai()` - analiza strony WWW obiektu przez model OpenAI
+- `get_hotel_details_ai()` - placeholder (integracja AI usunieta)
 - `resolve_region()` - reverse geocoding (Nominatim)
 - `clean_row_data()` + `final_validate_row()` - czyszczenie i walidacja danych wyjsciowych
 
@@ -50,11 +49,7 @@ Najwazniejsze funkcje:
 - Python 3.10+ (zalecane)
 - Google Chrome
 - Polaczenie internetowe
-- Zmienne srodowiskowe:
-  - `OPENAI_API_KEY` (opcjonalnie, dla pol `Cena_AI`, `Waluta`, `Uwagi_AI`)
-
-Uwaga:
-- Jesli brak `OPENAI_API_KEY`, scraper nadal dziala, ale pola AI beda puste.
+- Zmienne srodowiskowe: brak wymaganych zmiennych dla dzialania podstawowego.
 
 ## 5. Instalacja
 
@@ -140,7 +135,7 @@ Testy obejmuja m.in.:
 - Dodatkowe metryki jakosc danych (np. confidence score AI).
 - Eksport do formatu XLSX i/lub SQLite.
 - Wydzielenie konfiguracji do pliku `.env` lub `config.yaml`.
-- Rozszerzenie testow integracyjnych o mocki odpowiedzi Nominatim/OpenAI.
+- Rozszerzenie testow integracyjnych o mocki odpowiedzi Nominatim.
 
 ## 12. Szybka diagnostyka
 
@@ -148,8 +143,8 @@ Najczestsze problemy:
 - Brak wynikow:
   - sprawdz log `Wyniki/germany_worker_accommodation.log`
   - sprawdz, czy Google Maps nie wymusza CAPTCHA
-- Brak danych AI:
-  - ustaw `OPENAI_API_KEY`
+- Brak danych w polach AI:
+  - integracja AI zostala usunieta celowo
 - Bledy Selenium:
   - zaktualizuj Chrome
   - ponownie zainstaluj zaleznosci z `requirements.txt`

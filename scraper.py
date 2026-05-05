@@ -1,15 +1,16 @@
 import csv
+import queue
 import json
 import logging
 import os
-import random
 import re
+import threading
 import time
+import asyncio
 from pathlib import Path
 from urllib.parse import quote_plus, urljoin, urlparse
 from urllib.request import Request, urlopen
 
-from openai import OpenAI
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
@@ -46,10 +47,10 @@ try:
 except NameError:
     PROJECT_ROOT = Path.cwd()
 
-OUTPUT_DIR = PROJECT_ROOT / "Wyniki"
-OUTPUT_FILE = OUTPUT_DIR / "germany_switzerland_worker_accommodation.csv"
-CACHE_FILE = OUTPUT_DIR / "germany_markets_cache.json"
-LOG_FILE = OUTPUT_DIR / "germany_worker_accommodation.log"
+OUTPUT_DIR = Path(r"C:\Users\kanbu\Documents\Wyszukiwarka hoteli (DE,CHF)\Wyniki")
+OUTPUT_FILE = Path(r"C:\Users\kanbu\Documents\Wyszukiwarka hoteli (DE,CHF)\Wyniki\germany_switzerland_worker_accommodation.csv")
+CACHE_FILE = Path(r"C:\Users\kanbu\Documents\Wyszukiwarka hoteli (DE,CHF)\Wyniki\germany_markets_cache.json")
+LOG_FILE = Path(r"C:\Users\kanbu\Documents\Wyszukiwarka hoteli (DE,CHF)\Wyniki\germany_worker_accommodation.log")
 
 SEARCH_QUERIES = [
     "Monteurzimmer",
@@ -106,7 +107,6 @@ SCROLL_PAUSE = 1.0
 HEADLESS_DEFAULT = True
 EXTERNAL_SITE_TIMEOUT = 10
 MAPS_RESULTS_TIMEOUT = 120
-OPENAI_MODEL = "gpt-4o-mini"
 REVERSE_GEO_TIMEOUT = 8
 PLAYWRIGHT_TIMEOUT_MS = 25000
 MAX_RESULTS_PER_PORTAL_QUERY = 30
@@ -227,6 +227,14 @@ def search_url(query, country, lat, lon, zoom=10.5):
 
 
 def build_driver(headless=True):
+    # On Windows, Playwright sync API requires a Proactor event loop policy
+    # to spawn subprocesses (Node driver). Some Jupyter setups force Selector,
+    # which causes NotImplementedError in asyncio subprocess transport.
+    if os.name == "nt" and hasattr(asyncio, "WindowsProactorEventLoopPolicy"):
+        policy = asyncio.get_event_loop_policy()
+        if not isinstance(policy, asyncio.WindowsProactorEventLoopPolicy):
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
     playwright = sync_playwright().start()
     browser = playwright.chromium.launch(
         headless=headless,
@@ -321,61 +329,13 @@ def extract_details_in_new_tab(driver, place_url):
 
 
 def get_openai_client(logger):
-    api_key = os.getenv("OPENAI_API_KEY", "").strip()
-    if not api_key:
-        logger.warning("Brak OPENAI_API_KEY. Pola AI pozostaną puste.")
-        return None
-    return OpenAI(api_key=api_key)
+    logger.info("OpenAI integration disabled. AI fields will stay empty.")
+    return None
 
 
 def get_hotel_details_ai(driver, website_url, client, logger):
     default = {"price": None, "currency": "", "comment": "", "has_kitchen": False, "has_parking": False}
-    if not website_url or not client:
-        return default
-    try:
-        time.sleep(random.uniform(2, 5))
-        page = driver["page"] if isinstance(driver, dict) else driver
-        if hasattr(page, "goto"):
-            page.goto(website_url, timeout=EXTERNAL_SITE_TIMEOUT * 1000, wait_until="domcontentloaded")
-            body_text = (page.locator("body").inner_text(timeout=5000) or "").strip()[:4000]
-        else:
-            if hasattr(page, "set_page_load_timeout"):
-                page.set_page_load_timeout(EXTERNAL_SITE_TIMEOUT)
-            page.get(website_url)
-            body_text = (page.find_element(By.TAG_NAME, "body").text or "").strip()[:4000]
-        if not body_text:
-            default["comment"] = "No visible body text"
-            return default
-        response = client.responses.create(
-            model=OPENAI_MODEL,
-            input=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a German accommodation expert. Extract the price per person per night "
-                        "(pro Person / pro Nacht) for workers. Return ONLY a JSON object: "
-                        "{'price': float, 'currency': string, 'comment': string, 'has_kitchen': boolean, 'has_parking': boolean}. "
-                        "If no price is found, price should be null."
-                    ),
-                },
-                {"role": "user", "content": body_text},
-            ],
-            timeout=EXTERNAL_SITE_TIMEOUT,
-        )
-        output_text = (response.output_text or "").strip()
-        output_text = re.sub(r"^```json|```$", "", output_text).strip()
-        parsed = json.loads(output_text)
-        return {
-            "price": parsed.get("price"),
-            "currency": parsed.get("currency", ""),
-            "comment": parsed.get("comment", ""),
-            "has_kitchen": bool(parsed.get("has_kitchen", False)),
-            "has_parking": bool(parsed.get("has_parking", False)),
-        }
-    except Exception as exc:
-        logger.warning(f"AI error for {website_url}: {exc}")
-        default["comment"] = f"AI error: {exc}"
-        return default
+    return default
 
 
 def get_place_details_with_cache(driver, place_url, cache, logger):
@@ -682,10 +642,10 @@ def scrape_query_cell(driver, query, country, lat, lon, cache, client, logger):
     return rows
 
 
-def run_scraper(headless_default=HEADLESS_DEFAULT):
+def _run_scraper_internal(headless_default=HEADLESS_DEFAULT):
     logger = setup_logging()
     logger.info("=== START scraper portalowy (Playwright, bez publicznego API) ===")
-    logger.info("OpenAI: %s", "ON" if os.getenv("OPENAI_API_KEY", "").strip() else "OFF")
+    logger.info("OpenAI: OFF (removed)")
     driver = build_driver(headless=headless_default)
     client = get_openai_client(logger)
     all_rows, seen_global = load_existing_csv(OUTPUT_FILE)
@@ -742,6 +702,35 @@ def run_scraper(headless_default=HEADLESS_DEFAULT):
         save_csv(all_rows, OUTPUT_FILE)
         save_cache(cache, logger)
         logger.info(f"Gotowe. Rekordow: {len(all_rows)}")
+
+
+def run_scraper(headless_default=HEADLESS_DEFAULT):
+    try:
+        asyncio.get_running_loop()
+        in_running_loop = True
+    except RuntimeError:
+        in_running_loop = False
+
+    if not in_running_loop:
+        return _run_scraper_internal(headless_default=headless_default)
+
+    # Jupyter zwykle ma aktywna petle event loop, a Playwright Sync API tego nie wspiera.
+    # Uruchamiamy scraper w osobnym watku, gdzie nie ma aktywnej petli.
+    result_queue = queue.Queue()
+
+    def _worker():
+        try:
+            _run_scraper_internal(headless_default=headless_default)
+            result_queue.put((True, None))
+        except Exception as exc:
+            result_queue.put((False, exc))
+
+    worker = threading.Thread(target=_worker, daemon=True)
+    worker.start()
+    worker.join()
+    success, payload = result_queue.get()
+    if not success:
+        raise payload
 
 
 if __name__ == "__main__":
